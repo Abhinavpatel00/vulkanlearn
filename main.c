@@ -58,6 +58,8 @@ typedef struct Buffer
 	size_t size;
 } Buffer;
 
+
+
 u32 selectmemorytype(
     VkPhysicalDeviceMemoryProperties* memprops, u32 memtypeBits, VkFlags requirements_mask)
 {
@@ -341,23 +343,8 @@ int main(int argc, const char** argv)
 	volkLoadDevice(device);
 	// surface createinfo need different for other os or x11
 	VkSurfaceKHR surface = 0;
-#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
-	VkWaylandSurfaceCreateInfoKHR surfacecreateInfo = {
-	    .sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
-	    .display = glfwGetWaylandDisplay(),
-	    .surface = glfwGetWaylandWindow(window),
-	};
-	VK_CHECK(vkCreateWaylandSurfaceKHR(instance, &surfacecreateInfo, 0, &surface));
-#elif defined(VK_USE_PLATFORM_XLIB_KHR)
-	VkXlibSurfaceCreateInfoKHR surfacecreateInfo = {
-	    .sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR,
-	    .dpy = glfwGetX11Display(),
-	    .window = glfwGetX11Window(window),
-	};
-	VK_CHECK(vkCreateXlibSurfaceKHR(instance, &surfacecreateInfo, 0, &surface));
-#else
-	printf("No supported platform defined for Vulkan surface creation");
-#endif
+	// Use GLFW to create the Vulkan surface in a cross-platform way
+	VK_CHECK(glfwCreateWindowSurface(instance, window, NULL, &surface));
 
 	VkDescriptorSetLayout descriptorSetLayout;
 	VkDescriptorSetLayoutBinding uboLayoutBinding = {
@@ -649,8 +636,11 @@ int main(int argc, const char** argv)
 	    &pipeline));
 	VkCommandBuffer commandBuffer;
 	// Load OBJ model
-	 fastObjMesh* mesh = fast_obj_read("monkey.obj");
-	//fastObjMesh* mesh = fast_obj_read("/home/lka/myprojects/vulkantriangle/ok.obj");
+
+	//	fastObjMesh* mesh = fast_obj_read("/home/lka/practice/mygames/niagara/data/kitten.obj");
+
+	 fastObjMesh* mesh = fast_obj_read("/home/lka/practice/mytools/filament/assets/models/monkey/monkey.obj");
+	// fastObjMesh* mesh = fast_obj_read("/home/lka/myprojects/vulkantriangle/ok.obj");
 	if (!mesh)
 	{
 		fprintf(stderr, "Failed to load OBJ file\n");
@@ -673,7 +663,7 @@ int main(int argc, const char** argv)
 		// Position (required)
 		if (idx.p > 0)
 		{
-			unsigned int p_idx = (idx.p - 1) * 3;
+			unsigned int p_idx = (idx.p) * 3;
 			vertices[i].pos[0] = mesh->positions[p_idx];
 			vertices[i].pos[1] = mesh->positions[p_idx + 1];
 			vertices[i].pos[2] = mesh->positions[p_idx + 2];
@@ -689,7 +679,7 @@ int main(int argc, const char** argv)
 		// Texture coordinates (optional)
 		if (idx.t > 0 && mesh->texcoords)
 		{
-			unsigned int t_idx = (idx.t - 1) * 2;
+			unsigned int t_idx = (idx.t) * 2;
 			vertices[i].texcoord[0] = mesh->texcoords[t_idx];
 			vertices[i].texcoord[1] = 1.0f - mesh->texcoords[t_idx + 1]; // Flip Y
 		}
@@ -702,7 +692,7 @@ int main(int argc, const char** argv)
 		// Normals (optional)
 		if (idx.n > 0 && mesh->normals)
 		{
-			unsigned int n_idx = (idx.n - 1) * 3;
+			unsigned int n_idx = (idx.n) * 3;
 			vertices[i].normal[0] = mesh->normals[n_idx];
 			vertices[i].normal[1] = mesh->normals[n_idx + 1];
 			vertices[i].normal[2] = mesh->normals[n_idx + 2];
@@ -718,6 +708,7 @@ int main(int argc, const char** argv)
 		// Create sequential indices since we're expanding vertices
 		indices[i] = i;
 	}
+
 
 	Buffer vertexBuffer, indexBuffer;
 	printf("Creating buffers for %u vertices and %u indices\n", vertex_count, index_count);
@@ -753,28 +744,134 @@ int main(int argc, const char** argv)
 
 	vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, NULL);
 
-	while (!glfwWindowShouldClose(window))
-	{
-		glfwPollEvents();
-		// In your rendering loop, before submitting commands
-		mat4 model = GLM_MAT4_IDENTITY_INIT;
-		mat4 view = GLM_MAT4_IDENTITY_INIT;
-		mat4 proj = GLM_MAT4_IDENTITY_INIT;
+// Camera parameters
+vec3 cameraPos = {0.0f, 0.0f, 3.0f};
+vec3 cameraFront = {0.0f, 0.0f, -1.0f};
+vec3 cameraUp = {0.0f, 1.0f, 0.0f};
+float cameraSpeed = 2.5f; // Units per second
+float mouseSensitivity = 0.1f;
+float fov = 45.0f;
 
-		// Move the camera back along -Z so we can see the mesh
-		glm_translate(view, (vec3){0.0f, 0.0f, -3.0f}); // Camera at (0,0,3) looking at origin
+// Timing
+float deltaTime = 0.0f;
+float lastFrame = 0.0f;
 
-		glm_perspective(glm_rad(45.0f),
-		    (float)windowWidth / (float)windowHeight,
-		    0.1f, 100.0f, proj);
+// Mouse state
+double lastX = 400, lastY = 300;
+bool firstMouse = true;
 
-		// GLM (cglm) produces OpenGL-style clip space, so invert Y for Vulkan
-		proj[1][1] *= -1;
 
-		unsigned char* uboBytes = (unsigned char*)uniformBuffer.data;
-		memcpy(uboBytes + 0 * sizeof(mat4), &model, sizeof(mat4));
-		memcpy(uboBytes + 1 * sizeof(mat4), &view, sizeof(mat4));
-		memcpy(uboBytes + 2 * sizeof(mat4), &proj, sizeof(mat4));
+
+void handle_keyboard(GLFWwindow* window) {
+    float velocity = cameraSpeed * deltaTime;
+    vec3 move = GLM_VEC3_ZERO_INIT;
+    
+    // WASD movement
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        glm_vec3_scale(cameraFront, velocity, move);
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        glm_vec3_scale(cameraFront, -velocity, move);
+
+    vec3 right;
+    glm_vec3_cross(cameraFront, cameraUp, right);
+    glm_normalize(right);
+
+    // Scale right vector by velocity before adding to movement
+    vec3 rightVelocity;
+    glm_vec3_scale(right, velocity, rightVelocity);
+
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        glm_vec3_add(move, rightVelocity, move);
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        glm_vec3_sub(move, rightVelocity, move);
+
+    // Q/E for vertical movement (already correctly scaled)
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
+        move[1] += velocity;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS)
+        move[1] -= velocity;
+
+    // Add final movement vector to position
+    if (glm_vec3_norm(move) > 0.0f) {
+        glm_vec3_add(cameraPos, move, cameraPos);
+    }
+}
+
+void handle_mouse(GLFWwindow* window) {
+    double xpos, ypos;
+    glfwGetCursorPos(window, &xpos, &ypos);
+
+    if (firstMouse) {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
+
+    float xoffset = (xpos - lastX) * mouseSensitivity;
+    float yoffset = (lastY - ypos) * mouseSensitivity;
+    lastX = xpos;
+    lastY = ypos;
+
+    static float yaw = -90.0f;
+    static float pitch = 0.0f;
+    
+    yaw += xoffset;
+    pitch += yoffset;
+
+    if (pitch > 89.0f) pitch = 89.0f;
+    if (pitch < -89.0f) pitch = -89.0f;
+
+    vec3 front;
+    front[0] = cos(glm_rad(yaw)) * cos(glm_rad(pitch));
+    front[1] = sin(glm_rad(pitch));
+    front[2] = sin(glm_rad(yaw)) * cos(glm_rad(pitch));
+    glm_normalize(front);
+    glm_vec3_copy(front, cameraFront);
+}
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    fov -= (float)yoffset;
+    if (fov < 1.0f) fov = 1.0f;
+    if (fov > 90.0f) fov = 90.0f;
+}
+glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+glfwSetScrollCallback(window, scroll_callback);
+while (!glfwWindowShouldClose(window)) {
+    // Calculate delta time
+    float currentFrame = glfwGetTime();
+    deltaTime = currentFrame - lastFrame;
+    lastFrame = currentFrame;
+    
+    glfwPollEvents();
+
+    // Handle keyboard input
+    handle_keyboard(window);
+    
+    // Handle mouse input
+    handle_mouse(window);
+
+    // Update matrices
+    mat4 model = GLM_MAT4_IDENTITY_INIT;
+    mat4 view;
+    mat4 proj;
+
+    // Calculate view matrix using lookAt
+    vec3 target;
+    glm_vec3_add(cameraPos, cameraFront, target);
+    glm_lookat(cameraPos, target, cameraUp, view);
+
+    // Projection matrix
+    glm_perspective(glm_rad(fov),
+                   (float)windowWidth / (float)windowHeight,
+                   0.1f, 100.0f, proj);
+    proj[1][1] *= -1;  // Flip Y-axis for Vulkan
+
+    // Update uniform buffer
+    unsigned char* uboBytes = (unsigned char*)uniformBuffer.data;
+    memcpy(uboBytes + 0 * sizeof(mat4), &model, sizeof(mat4));
+    memcpy(uboBytes + 1 * sizeof(mat4), &view, sizeof(mat4));
+    memcpy(uboBytes + 2 * sizeof(mat4), &proj, sizeof(mat4));
+
 		u32 imageIndex = 0;
 
 		VK_CHECK(vkAcquireNextImageKHR(device, swapchain, ~0ull, imageAvailableSemaphore,
